@@ -133,9 +133,13 @@ final class StatusTableViewController: UITableViewController, UIGestureRecognize
             let calendar = Calendar.current
             var components = DateComponents()
             components.minute = 0
-            let date = Date(timeIntervalSinceNow: -TimeInterval(hours: 6))
+            let date = Date(timeIntervalSinceNow: -TimeInterval(hours: 3))
             charts.startDate = (calendar as NSCalendar).nextDate(after: date, matching: components, options: [.matchStrictly, .searchBackwards]) ?? date
-
+            charts.glucoseDisplayRange = (
+                min: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 75),
+                max: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 225)
+            )
+            
             let reloadGroup = DispatchGroup()
             var glucoseUnit: HKUnit?
 

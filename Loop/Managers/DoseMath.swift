@@ -80,7 +80,7 @@ struct DoseMath {
         var duration = TimeInterval(minutes: 30)
 
         if minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) < minGlucoseTargets.minValue && (!allowPredictiveTempBelowRange || eventualGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) <= eventualGlucoseTargets.minValue) {
-            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: (minGlucoseTargets.minValue + minGlucoseTargets.maxValue) / 2)
+            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: minGlucoseTargets.minValue)
             rate = calculateTempBasalRateForGlucose(minGlucose.quantity,
                 toTargetGlucose: targetGlucose,
                 insulinSensitivity: currentSensitivity,
@@ -94,7 +94,7 @@ struct DoseMath {
                 adjustedMaxBasalRate = currentScheduledBasalRate
             }
 
-            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: (eventualGlucoseTargets.minValue + eventualGlucoseTargets.maxValue) / 2)
+            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: eventualGlucoseTargets.maxValue)
             rate = calculateTempBasalRateForGlucose(eventualGlucose.quantity,
                 toTargetGlucose: targetGlucose,
                 insulinSensitivity: currentSensitivity,
