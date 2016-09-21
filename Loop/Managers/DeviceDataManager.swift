@@ -933,10 +933,10 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
             receiver?.delegate = self
         }
 
-        if let transmitterID = UserDefaults.standard.transmitterID {
-            transmitter = Transmitter(ID: transmitterID, passiveModeEnabled: true)
-            transmitter?.delegate = self
-        }
+//        if let transmitterID = UserDefaults.standard.transmitterID {
+//            transmitter = Transmitter(ID: transmitterID, passiveModeEnabled: true)
+//            transmitter?.delegate = self
+//        }
 
         enableRileyLinkHeartbeatIfNeeded()
     }
