@@ -321,8 +321,8 @@ final class StatusTableViewController: UITableViewController, UIGestureRecognize
         let charts = StatusChartsManager()
 
         charts.glucoseDisplayRange = (
-            min: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 100),
-            max: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 175)
+            min: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 50),
+            max: HKQuantity(unit: HKUnit.milligramsPerDeciliterUnit(), doubleValue: 250)
         )
 
         return charts
