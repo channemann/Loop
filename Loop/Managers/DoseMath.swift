@@ -51,7 +51,6 @@ struct DoseMath {
      - parameter glucoseTargetRange:            The schedule of target glucose ranges
      - parameter insulinSensitivity:            The schedule of insulin sensitivities, in Units of insulin per glucose-unit
      - parameter basalRateSchedule:             The schedule of basal rates
-     - parameter allowPredictiveTempBelowRange: Whether to allow a higher basal rate, up to the normal scheduled rate, than is necessary to correct the lowest predicted value, if the eventual predicted value is in or above the target range. Defaults to false.
 
      - returns: The recommended basal rate and duration
      */
@@ -61,8 +60,7 @@ struct DoseMath {
         maxBasalRate: Double,
         glucoseTargetRange: GlucoseRangeSchedule,
         insulinSensitivity: InsulinSensitivitySchedule,
-        basalRateSchedule: BasalRateSchedule,
-        allowPredictiveTempBelowRange: Bool = false
+        basalRateSchedule: BasalRateSchedule
     ) -> (rate: Double, duration: TimeInterval)? {
         guard glucose.count > 1 else {
             return nil
