@@ -12,7 +12,21 @@ import WatchConnectivity
 
 final class AddCarbsInterfaceController: WKInterfaceController, IdentifiableClass {
 
-    private var carbValue: Int = 15
+    fileprivate var carbValue: Int = 15 {
+        didSet {
+            guard carbValue >= 0 else {
+                carbValue = 0
+                return
+            }
+
+            guard carbValue <= 100 else {
+                carbValue = 100
+                return
+            }
+
+            valueLabel.setText(String(carbValue))
+        }
+    }
 
     private var absorptionTime = AbsorptionTimeType.medium {
         didSet {
@@ -31,26 +45,19 @@ final class AddCarbsInterfaceController: WKInterfaceController, IdentifiableClas
         }
     }
 
-    @IBOutlet var valueLabel: WKInterfaceLabel!
+    @IBOutlet weak var valueLabel: WKInterfaceLabel!
 
-    @IBOutlet var valuePicker: WKInterfacePicker!
+    @IBOutlet weak var absorptionButtonA: WKInterfaceButton!
 
-    @IBOutlet var absorptionButtonA: WKInterfaceButton!
+    @IBOutlet weak var absorptionButtonB: WKInterfaceButton!
 
-    @IBOutlet var absorptionButtonB: WKInterfaceButton!
-
-    @IBOutlet var absorptionButtonC: WKInterfaceButton!
+    @IBOutlet weak var absorptionButtonC: WKInterfaceButton!
 
     override func awake(withContext context: Any?) {
         super.awake(withContext: context)
         
         // Configure interface objects here.
-
-        let items = (0...100).map { _ in WKPickerItem() }
-
-        valuePicker.setItems(items)
-
-        valuePicker.setSelectedItemIndex(carbValue)
+        crownSequencer.delegate = self
 
         absorptionTime = .medium
     }
@@ -59,7 +66,7 @@ final class AddCarbsInterfaceController: WKInterfaceController, IdentifiableClas
         // This method is called when watch view controller is about to be visible to user
         super.willActivate()
 
-        valuePicker.focus()
+        crownSequencer.focus()
     }
 
     override func didDeactivate() {
@@ -69,17 +76,12 @@ final class AddCarbsInterfaceController: WKInterfaceController, IdentifiableClas
 
     // MARK: - Actions
 
-    @IBAction func pickerValueUpdated(_ value: Int) {
-        carbValue = value
-        valueLabel.setText(String(value))
-    }
-
     @IBAction func decrement() {
-        valuePicker.setSelectedItemIndex(carbValue - 5)
+        carbValue -= 5
     }
 
     @IBAction func increment() {
-        valuePicker.setSelectedItemIndex(carbValue + 5)
+        carbValue += 5
     }
 
     @IBAction func setAbsorptionTimeFast() {
@@ -120,4 +122,19 @@ final class AddCarbsInterfaceController: WKInterfaceController, IdentifiableClas
         dismiss()
     }
 
+    // MARK: - Crown Sequencer
+
+    fileprivate var accumulatedRotation: Double = 0
+}
+
+fileprivate let rotationsPerCarb: Double = 1/24
+
+extension AddCarbsInterfaceController: WKCrownDelegate {
+    func crownDidRotate(_ crownSequencer: WKCrownSequencer?, rotationalDelta: Double) {
+        accumulatedRotation += rotationalDelta
+
+        let remainder = accumulatedRotation.truncatingRemainder(dividingBy: rotationsPerCarb)
+        carbValue += Int((accumulatedRotation - remainder).divided(by: rotationsPerCarb))
+        accumulatedRotation = remainder
+    }
 }

@@ -7,27 +7,26 @@
 //
 
 import UIKit
-import LoopKit
 import HealthKit
 
 
 final class GlucoseHUDView: HUDView {
 
-    @IBOutlet private var unitLabel: UILabel! {
+    @IBOutlet private weak var unitLabel: UILabel! {
         didSet {
             unitLabel.text = "–"
             unitLabel.textColor = .glucoseTintColor
         }
     }
 
-    @IBOutlet private var glucoseLabel: UILabel! {
+    @IBOutlet private weak var glucoseLabel: UILabel! {
         didSet {
             glucoseLabel.text = "–"
             glucoseLabel.textColor = .glucoseTintColor
         }
     }
 
-    @IBOutlet private var alertLabel: UILabel! {
+    @IBOutlet private weak var alertLabel: UILabel! {
         didSet {
             alertLabel.alpha = 0
             alertLabel.backgroundColor = UIColor.agingColor
@@ -37,14 +36,43 @@ final class GlucoseHUDView: HUDView {
         }
     }
 
-    func set(_ glucoseValue: GlucoseValue, for unit: HKUnit, from sensor: SensorDisplayable?) {
+    private enum SensorAlertState {
+        case ok
+        case missing
+        case invalid
+        case remote
+    }
+
+    private var sensorAlertState = SensorAlertState.ok {
+        didSet {
+            var alertLabelAlpha: CGFloat = 1
+
+            switch sensorAlertState {
+            case .ok:
+                alertLabelAlpha = 0
+            case .missing, .invalid:
+                alertLabel.backgroundColor = UIColor.agingColor
+                alertLabel.text = "!"
+            case .remote:
+                alertLabel.backgroundColor = UIColor.unknownColor
+                alertLabel.text = "☁︎"
+            }
+
+            UIView.animate(withDuration: 0.25, animations: {
+                self.alertLabel.alpha = alertLabelAlpha
+            })
+        }
+    }
+
+    func set(glucoseQuantity: Double, at glucoseStartDate: Date, unitString: String, from sensor: SensorDisplayable?) {
         var accessibilityStrings = [String]()
 
-        let time = timeFormatter.string(from: glucoseValue.startDate)
+        let time = timeFormatter.string(from: glucoseStartDate)
         caption?.text = time
+        let unit = HKUnit(from: unitString)
 
         let numberFormatter = NumberFormatter.glucoseFormatter(for: unit)
-        if let valueString = numberFormatter.string(from: NSNumber(value: glucoseValue.quantity.doubleValue(for: unit))) {
+        if let valueString = numberFormatter.string(from: NSNumber(value: glucoseQuantity)) {
             glucoseLabel.text = valueString
             accessibilityStrings.append(String(format: NSLocalizedString("%1$@ at %2$@", comment: "Accessbility format value describing glucose: (1: glucose number)(2: glucose time)"), valueString, time))
         }
@@ -56,16 +84,19 @@ final class GlucoseHUDView: HUDView {
             accessibilityStrings.append(trend.localizedDescription)
         }
 
-        if sensor?.isStateValid == false {
+        if sensor == nil {
+            sensorAlertState = .missing
+        } else if sensor!.isStateValid == false {
+            sensorAlertState = .invalid
             accessibilityStrings.append(NSLocalizedString("Needs attention", comment: "Accessibility label component for glucose HUD describing an invalid state"))
+        } else if sensor!.isLocal == false {
+            sensorAlertState = .remote
+        } else {
+            sensorAlertState = .ok
         }
 
         unitLabel.text = unitStrings.joined(separator: " ")
         accessibilityValue = accessibilityStrings.joined(separator: ", ")
-
-        UIView.animate(withDuration: 0.25, animations: { 
-            self.alertLabel.alpha = sensor?.isStateValid == true ? 0 : 1
-        }) 
     }
 
     private lazy var timeFormatter: DateFormatter = {
