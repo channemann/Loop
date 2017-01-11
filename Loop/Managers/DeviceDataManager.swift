@@ -21,7 +21,7 @@ import ShareClient
 import xDripG5
 
 
-final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, TransmitterDelegate, ReceiverDelegate {
+final class DeviceDataManager: CarbStoreDelegate, CarbStoreSyncDelegate, DoseStoreDelegate, TransmitterDelegate, ReceiverDelegate {
 
     // MARK: - Utilities
 
@@ -56,6 +56,37 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
     var sensorInfo: SensorDisplayable? {
         return latestGlucoseG5 ?? latestGlucoseG4 ?? latestGlucoseFromShare ?? latestPumpStatusFromMySentry
     }
+
+    var latestPumpStatus: RileyLinkKit.PumpStatus?
+
+    // Returns a value in the range 0 - 1
+    var pumpBatteryChargeRemaining: Double? {
+        get {
+            if let status = latestPumpStatusFromMySentry {
+                return Double(status.batteryRemainingPercent) / 100
+            } else if let status = latestPumpStatus {
+                return batteryChemistry.chargeRemaining(voltage: status.batteryVolts)
+            } else {
+                return nil
+            }
+        }
+    }
+
+    // Battery monitor
+    func observeBatteryDuring(_ block: () -> Void) {
+        let oldVal = pumpBatteryChargeRemaining
+        block()
+        if let newVal = pumpBatteryChargeRemaining {
+            if newVal == 0 {
+                NotificationManager.sendPumpBatteryLowNotification()
+            }
+
+            if let oldVal = oldVal, newVal - oldVal >= 0.5 {
+                AnalyticsManager.sharedManager.pumpBatteryWasReplaced()
+            }
+        }
+    }
+
 
     // MARK: - RileyLink
 
@@ -118,6 +149,10 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
         }
     }
 
+    /// Controls the management of the RileyLink timer tick, which is a reliably-changing BLE
+    /// characteristic which can cause the app to wake. For most users, the G5 Transmitter and 
+    /// G4 Receiver are reliable as hearbeats, but users who find their resources extremely constrained
+    /// due to greedy apps or older devices may choose to always enable the timer by always setting `true`
     private func enableRileyLinkHeartbeatIfNeeded() {
         if transmitter != nil {
             rileyLinkManager.timerTickEnabled = false
@@ -154,12 +189,9 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
             return
         }
 
-        // Report battery changes to Analytics
-        if let latestPumpStatusFromMySentry = latestPumpStatusFromMySentry, status.batteryRemainingPercent - latestPumpStatusFromMySentry.batteryRemainingPercent >= 50 {
-            AnalyticsManager.sharedManager.pumpBatteryWasReplaced()
+        observeBatteryDuring {
+            latestPumpStatusFromMySentry = status
         }
-
-        latestPumpStatusFromMySentry = status
 
         // Gather PumpStatus from MySentry packet
         let pumpStatus: NightscoutUploadKit.PumpStatus?
@@ -210,10 +242,6 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
             self.updateReservoirVolume(status.reservoirRemainingUnits, at: pumpDate, withTimeLeft: TimeInterval(minutes: Double(status.reservoirRemainingMinutes)))
         }
 
-        // Check for an empty battery. Sentry packets are still broadcast for a few hours after this value reaches 0.
-        if status.batteryRemainingPercent == 0 {
-            NotificationManager.sendPumpBatteryLowNotification()
-        }
     }
 
     /**
@@ -302,7 +330,7 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
         - Success(status, date): The pump status, and the resolved date according to the pump's clock
         - Failure(error): An error describing why the command failed
      */
-    private func readPumpData(_ completion: @escaping (Either<(status: RileyLinkKit.PumpStatus, date: Date), Error>) -> Void) {
+    private func readPumpData(_ completion: @escaping (RileyLinkKit.Either<(status: RileyLinkKit.PumpStatus, date: Date), Error>) -> Void) {
         guard let device = rileyLinkManager.firstConnectedDevice, let ops = device.ops else {
             completion(.failure(LoopError.configurationError))
             return
@@ -347,8 +375,14 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
                 let nsPumpStatus: NightscoutUploadKit.PumpStatus?
                 switch result {
                 case .success(let (status, date)):
+                    self.observeBatteryDuring {
+                        self.latestPumpStatus = status
+                    }
+
                     self.updateReservoirVolume(status.reservoir, at: date, withTimeLeft: nil)
                     let battery = BatteryStatus(voltage: status.batteryVolts, status: BatteryIndicator(batteryStatus: status.batteryStatus))
+
+
                     nsPumpStatus = NightscoutUploadKit.PumpStatus(clock: date, pumpID: status.pumpID, iob: nil, battery: battery, suspended: status.suspended, bolusing: status.bolusing, reservoir: status.reservoir)
                 case .failure(let error):
                     self.troubleshootPumpComms(using: device)
@@ -694,6 +728,13 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
             UserDefaults.standard.preferredInsulinDataSource = preferredInsulinDataSource
         }
     }
+    
+    /// The Default battery chemistry is Alkaline
+    var batteryChemistry = UserDefaults.standard.batteryChemistry ?? .alkaline {
+        didSet {
+            UserDefaults.standard.batteryChemistry = batteryChemistry
+        }
+    }
 
     // MARK: G5 Transmitter
 
@@ -835,6 +876,66 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
         logger.addError(error, fromSource: "CarbStore")
     }
 
+    func carbStore(_ carbStore: CarbStore, hasEntriesNeedingUpload entries: [CarbEntry], withCompletion completionHandler: @escaping (_ uploadedObjects: [String]) -> Void) {
+
+        guard let uploader = remoteDataManager.nightscoutUploader else {
+            completionHandler([])
+            return
+        }
+
+        let nsCarbEntries = entries.map({ MealBolusNightscoutTreatment(carbEntry: $0)})
+
+        uploader.upload(nsCarbEntries) { (result) in
+            switch result {
+            case .success(let ids):
+                // Pass new ids back
+                completionHandler(ids)
+            case .failure(let error):
+                self.logger.addError(error, fromSource: "NightscoutUploader")
+                completionHandler([])
+            }
+        }
+    }
+
+    func carbStore(_ carbStore: CarbStore, hasModifiedEntries entries: [CarbEntry], withCompletion completionHandler: @escaping (_ uploadedObjects: [String]) -> Void) {
+        
+        guard let uploader = remoteDataManager.nightscoutUploader else {
+            completionHandler([])
+            return
+        }
+
+        let nsCarbEntries = entries.map({ MealBolusNightscoutTreatment(carbEntry: $0)})
+
+        uploader.modifyTreatments(nsCarbEntries) { (error) in
+            if let error = error {
+                self.logger.addError(error, fromSource: "NightscoutUploader")
+                completionHandler([])
+            } else {
+                completionHandler(entries.map { $0.externalId ?? "" } )
+            }
+        }
+
+    }
+
+    func carbStore(_ carbStore: CarbStore, hasDeletedEntries ids: [String], withCompletion completionHandler: @escaping ([String]) -> Void) {
+
+        guard let uploader = remoteDataManager.nightscoutUploader else {
+            completionHandler([])
+            return
+        }
+
+        uploader.deleteTreatmentsById(ids) { (error) in
+            if let error = error {
+                self.logger.addError(error, fromSource: "NightscoutUploader")
+                completionHandler([])
+            } else {
+                completionHandler(ids)
+            }
+        }
+        completionHandler([])
+    }
+
+
     // MARK: - GlucoseKit
 
     let glucoseStore: GlucoseStore? = GlucoseStore()
@@ -874,7 +975,11 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
 
     // MARK: - WatchKit
 
-    private(set) var watchManager: WatchDataManager!
+    fileprivate var watchManager: WatchDataManager!
+    
+    // MARK: - Status Extension
+    
+    fileprivate var statusExtensionManager: StatusExtensionDataManager!
 
     // MARK: - Initialization
 
@@ -932,9 +1037,11 @@ final class DeviceDataManager: CarbStoreDelegate, DoseStoreDelegate, Transmitter
 
         loopManager = LoopDataManager(deviceDataManager: self)
         watchManager = WatchDataManager(deviceDataManager: self)
+        statusExtensionManager = StatusExtensionDataManager(deviceDataManager: self)
         nightscoutDataManager = NightscoutDataManager(deviceDataManager: self)
 
         carbStore?.delegate = self
+        carbStore?.syncDelegate = self
         doseStore.delegate = self
 
         if UserDefaults.standard.receiverEnabled {
@@ -968,7 +1075,11 @@ extension DeviceDataManager: CustomDebugStringConvertible {
             "workoutModeEnabled: \(workoutModeEnabled)",
             "maximumBasalRatePerHour: \(maximumBasalRatePerHour)",
             "maximumBolus: \(maximumBolus)",
-            String(reflecting: rileyLinkManager)
+            String(reflecting: rileyLinkManager),
+            String(reflecting: statusExtensionManager!),
+            "",
+            "## NSUserDefaults",
+            String(reflecting: UserDefaults.standard.dictionaryRepresentation())
         ].joined(separator: "\n")
     }
 }
