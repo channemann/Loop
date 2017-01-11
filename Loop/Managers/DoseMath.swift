@@ -77,7 +77,11 @@ struct DoseMath {
         var rate: Double?
         var duration = TimeInterval(minutes: 30)
 
-        if minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) < minGlucoseTargets.minValue && (!allowPredictiveTempBelowRange || eventualGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) <= eventualGlucoseTargets.minValue) {
+        let alwaysLowTempBGThreshold: Double = 17 // mg/dL
+
+        if minGlucose.quantity.doubleValue(for: HKUnit.milligramsPerDeciliterUnit()) <= alwaysLowTempBGThreshold {
+            rate = 0
+        } else if minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) < minGlucoseTargets.minValue && eventualGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) <= eventualGlucoseTargets.minValue {
             let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: minGlucoseTargets.minValue)
             rate = calculateTempBasalRateForGlucose(minGlucose.quantity,
                 toTargetGlucose: targetGlucose,
@@ -158,7 +162,7 @@ struct DoseMath {
         // Use between to opt-out of the override.
         let minGlucoseTargets = glucoseTargetRange.between(start: minGlucose.startDate, end: minGlucose.startDate).first!.value
 
-        guard minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) >= minGlucoseTargets.minValue else {
+        guard minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) >= 17 else {
             return 0
         }
 
