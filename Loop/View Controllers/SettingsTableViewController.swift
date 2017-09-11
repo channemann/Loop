@@ -8,6 +8,7 @@
 
 import UIKit
 import HealthKit
+import InsulinKit
 import LoopKit
 import RileyLinkKit
 import MinimedKit
@@ -24,6 +25,9 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
     override func viewDidLoad() {
         super.viewDidLoad()
+
+        tableView.rowHeight = UITableViewAutomaticDimension
+        tableView.estimatedRowHeight = 44
 
         tableView.register(RileyLinkDeviceTableViewCell.nib(), forCellReuseIdentifier: RileyLinkDeviceTableViewCell.className)
 
@@ -105,13 +109,14 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
         case enlite = 0
         case g4
         case g5
+        case dexcomShare      // only displayed if g4 or g5 switched on
         case g5TransmitterID  // only displayed if g5 switched on
     }
 
     fileprivate enum ConfigurationRow: Int, CaseCountable {
         case glucoseTargetRange = 0
-        case minimumBGGuard
-        case insulinActionDuration
+        case suspendThreshold
+        case insulinModel
         case basalRate
         case carbRatio
         case insulinSensitivity
@@ -120,8 +125,7 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
     }
 
     fileprivate enum ServiceRow: Int, CaseCountable {
-        case share = 0
-        case nightscout
+        case nightscout = 0
         case mLab
         case loggly
         case amplitude
@@ -136,6 +140,29 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
         return formatter
     }()
+
+    override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
+        switch segue.destination {
+        case let vc as InsulinModelSettingsViewController:
+            vc.insulinModel = dataManager.loopManager.insulinModelSettings?.model
+
+            if let insulinSensitivitySchedule = dataManager.loopManager.insulinSensitivitySchedule {
+                vc.insulinSensitivitySchedule = insulinSensitivitySchedule
+            }
+
+            dataManager.loopManager.glucoseStore.preferredUnit { (unit, error) in
+                DispatchQueue.main.async {
+                    if let unit = unit {
+                        vc.glucoseUnit = unit
+                    }
+
+                    vc.delegate = self
+                }
+            }
+        default:
+            break
+        }
+    }
     
     // MARK: - UITableViewDataSource
 
@@ -151,10 +178,12 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
             return PumpRow.count
         case .cgm:
             switch dataManager.cgm {
+            case .g4?:
+                return CGMRow.count - 1  // No Transmitter ID cell
             case .g5?:
                 return CGMRow.count
             default:
-                return CGMRow.count - 1
+                return CGMRow.count - 2  // No Share or Transmitter ID cell
             }
         case .configuration:
             return ConfigurationRow.count
@@ -166,8 +195,6 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell: UITableViewCell
-
         switch Section(rawValue: indexPath.section)! {
         case .loop:
             switch LoopRow(rawValue: indexPath.row)! {
@@ -205,20 +232,28 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                 configCell.textLabel?.text = NSLocalizedString("Pump Battery Type", comment: "The title text for the battery type value")
                 configCell.detailTextLabel?.text = String(describing: dataManager.batteryChemistry)
             }
-            cell = configCell
+            return configCell
         case .cgm:
             let row = CGMRow(rawValue: indexPath.row)!
             switch row {
+            case .dexcomShare:
+                let configCell = tableView.dequeueReusableCell(withIdentifier: ConfigCellIdentifier, for: indexPath)
+                let shareService = dataManager.remoteDataManager.shareService
+
+                configCell.textLabel?.text = shareService.title
+                configCell.detailTextLabel?.text = shareService.username ?? TapToSetString
+
+                return configCell
             case .g5TransmitterID:
                 let configCell = tableView.dequeueReusableCell(withIdentifier: ConfigCellIdentifier, for: indexPath)
 
-                configCell.textLabel?.text = NSLocalizedString("G5 Transmitter ID", comment: "The title text for the Dexcom G5 transmitter ID config value")
+                configCell.textLabel?.text = NSLocalizedString("Transmitter ID", comment: "The title text for the Dexcom G5 transmitter ID config value")
 
                 if case .g5(let transmitterID)? = dataManager.cgm {
                     configCell.detailTextLabel?.text = transmitterID ?? TapToSetString
                 }
 
-                cell = configCell
+                return configCell
             default:
                 let switchCell = tableView.dequeueReusableCell(withIdentifier: SwitchTableViewCell.className, for: indexPath) as! SwitchTableViewCell
 
@@ -240,11 +275,11 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
                     switchCell.titleLabel.text = NSLocalizedString("G5 Transmitter", comment: "The title text for the G5 Transmitter switch cell")
                     switchCell.switch?.addTarget(self, action: #selector(g5Changed(_:)), for: .valueChanged)
-                case .g5TransmitterID:
+                case .dexcomShare, .g5TransmitterID:
                     assertionFailure()
                 }
 
-                cell = switchCell
+                return switchCell
             }
         case .configuration:
             let configCell = tableView.dequeueReusableCell(withIdentifier: ConfigCellIdentifier, for: indexPath)
@@ -281,7 +316,7 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                     configCell.detailTextLabel?.text = TapToSetString
                 }
             case .glucoseTargetRange:
-                configCell.textLabel?.text = NSLocalizedString("Target Range", comment: "The title text for the glucose target range schedule")
+                configCell.textLabel?.text = NSLocalizedString("Correction Range", comment: "The title text for the glucose target range schedule")
 
                 if let glucoseTargetRangeSchedule = dataManager.loopManager.settings.glucoseTargetRangeSchedule {
                     let unit = glucoseTargetRangeSchedule.unit
@@ -293,32 +328,25 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                 } else {
                     configCell.detailTextLabel?.text = TapToSetString
                 }
-            case .minimumBGGuard:
-                configCell.textLabel?.text = NSLocalizedString("Minimum BG Guard", comment: "The title text for the minimum bg guard setting")
+            case .suspendThreshold:
+                configCell.textLabel?.text = NSLocalizedString("Suspend Threshold", comment: "The title text in settings")
                 
-                if let minimumBGGuard = dataManager.loopManager.settings.minimumBGGuard {
-                    let value = valueNumberFormatter.string(from: NSNumber(value: minimumBGGuard.value)) ?? "-"
-                    configCell.detailTextLabel?.text = String(format: NSLocalizedString("%1$@ %2$@", comment: "Format string for minimum bg guard. (1: value)(2: bg unit)"), value, minimumBGGuard.unit.glucoseUnitDisplayString)
+                if let suspendThreshold = dataManager.loopManager.settings.suspendThreshold {
+                    let value = valueNumberFormatter.string(from: NSNumber(value: suspendThreshold.value)) ?? "-"
+                    configCell.detailTextLabel?.text = String(format: NSLocalizedString("%1$@ %2$@", comment: "Format string for current suspend threshold. (1: value)(2: bg unit)"), value, suspendThreshold.unit.glucoseUnitDisplayString)
                 } else {
                     configCell.detailTextLabel?.text = TapToSetString
                 }
-            case .insulinActionDuration:
-                configCell.textLabel?.text = NSLocalizedString("Insulin Action Duration", comment: "The title text for the insulin action duration value")
+            case .insulinModel:
+                configCell.textLabel?.text = NSLocalizedString("Insulin Model", comment: "The title text for the insulin model setting row")
 
-                if let insulinActionDuration = dataManager.loopManager.insulinActionDuration {
-                    let formatter = DateComponentsFormatter()
-                    formatter.unitsStyle = .abbreviated
-                    // Seems to have no effect.
-                    // http://stackoverflow.com/questions/32522965/what-am-i-doing-wrong-with-allowsfractionalunits-on-nsdatecomponentsformatter
-                    formatter.allowsFractionalUnits = true
-                    // formatter.allowedUnits = [.hour]
-
-                    configCell.detailTextLabel?.text = formatter.string(from: insulinActionDuration)
+                if let settings = dataManager.loopManager.insulinModelSettings {
+                    configCell.detailTextLabel?.text = settings.title
                 } else {
                     configCell.detailTextLabel?.text = TapToSetString
                 }
             case .maxBasal:
-            configCell.textLabel?.text = NSLocalizedString("Maximum Basal Rate", comment: "The title text for the maximum basal rate value")
+                configCell.textLabel?.text = NSLocalizedString("Maximum Basal Rate", comment: "The title text for the maximum basal rate value")
 
                 if let maxBasal = dataManager.loopManager.settings.maximumBasalRatePerHour {
                     configCell.detailTextLabel?.text = "\(valueNumberFormatter.string(from: NSNumber(value: maxBasal))!) U/hour"
@@ -335,7 +363,7 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                 }
             }
 
-            cell = configCell
+            return configCell
         case .devices:
             let deviceCell = tableView.dequeueReusableCell(withIdentifier: RileyLinkDeviceTableViewCell.className) as! RileyLinkDeviceTableViewCell
             let device = dataManager.rileyLinkManager.devices[indexPath.row]
@@ -347,16 +375,11 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
             deviceCell.connectSwitch.addTarget(self, action: #selector(deviceConnectionChanged(_:)), for: .valueChanged)
 
-            cell = deviceCell
+            return deviceCell
         case .services:
             let configCell = tableView.dequeueReusableCell(withIdentifier: ConfigCellIdentifier, for: indexPath)
 
             switch ServiceRow(rawValue: indexPath.row)! {
-            case .share:
-                let shareService = dataManager.remoteDataManager.shareService
-
-                configCell.textLabel?.text = shareService.title
-                configCell.detailTextLabel?.text = shareService.username ?? TapToSetString
             case .nightscout:
                 let nightscoutService = dataManager.remoteDataManager.nightscoutService
 
@@ -381,7 +404,6 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
             return configCell
         }
-        return cell
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
@@ -402,6 +424,22 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
     }
 
     // MARK: - UITableViewDelegate
+
+    override func tableView(_ tableView: UITableView, indentationLevelForRowAt indexPath: IndexPath) -> Int {
+        switch Section(rawValue: indexPath.section)! {
+        case .cgm:
+            switch CGMRow(rawValue: indexPath.row)! {
+            case .dexcomShare, .g5TransmitterID:
+                return 1
+            default:
+                break
+            }
+        default:
+            break
+        }
+
+        return 0
+    }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let sender = tableView.cellForRow(at: indexPath)
@@ -432,6 +470,16 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
             }
         case .cgm:
             switch CGMRow(rawValue: indexPath.row)! {
+            case .dexcomShare:
+                let service = dataManager.remoteDataManager.shareService
+                let vc = AuthenticationViewController(authentication: service)
+                vc.authenticationObserver = { [unowned self] (service) in
+                    self.dataManager.remoteDataManager.shareService = service
+
+                    self.tableView.reloadRows(at: [indexPath], with: .none)
+                }
+
+                show(vc, sender: sender)
             case .g5TransmitterID:
                 let vc: TextFieldTableViewController
                 var value: String?
@@ -452,12 +500,10 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
         case .configuration:
             let row = ConfigurationRow(rawValue: indexPath.row)!
             switch row {
-            case .insulinActionDuration, .maxBasal, .maxBolus:
+            case .maxBasal, .maxBolus:
                 let vc: TextFieldTableViewController
 
                 switch row {
-                case .insulinActionDuration:
-                    vc = .insulinActionDuration(dataManager.loopManager.insulinActionDuration)
                 case .maxBasal:
                     vc = .maxBasal(dataManager.loopManager.settings.maximumBasalRatePerHour)
                 case .maxBolus:
@@ -524,13 +570,13 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                 let scheduleVC = GlucoseRangeScheduleTableViewController()
 
                 scheduleVC.delegate = self
-                scheduleVC.title = NSLocalizedString("Target Range", comment: "The title of the glucose target range schedule screen")
+                scheduleVC.title = NSLocalizedString("Correction Range", comment: "The title of the glucose target range schedule screen")
 
                 if let schedule = dataManager.loopManager.settings.glucoseTargetRangeSchedule {
                     scheduleVC.timeZone = schedule.timeZone
                     scheduleVC.scheduleItems = schedule.items
                     scheduleVC.unit = schedule.unit
-                    scheduleVC.workoutRange = schedule.workoutRange
+                    scheduleVC.overrideRanges = schedule.overrideRanges
 
                     show(scheduleVC, sender: sender)
                 } else {
@@ -545,8 +591,8 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                         }
                     }
                 }
-            case .minimumBGGuard:
-                if let minBGGuard = dataManager.loopManager.settings.minimumBGGuard {
+            case .suspendThreshold:
+                if let minBGGuard = dataManager.loopManager.settings.suspendThreshold {
                     let vc = GlucoseThresholdTableViewController(threshold: minBGGuard.value, glucoseUnit: minBGGuard.unit)
                     vc.delegate = self
                     vc.indexPath = indexPath
@@ -567,6 +613,8 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                         }
                     }
                 }
+            case .insulinModel:
+                performSegue(withIdentifier: InsulinModelSettingsViewController.className, sender: sender)
             }
         case .devices:
             let vc = RileyLinkDeviceTableViewController()
@@ -591,16 +639,6 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
             }
         case .services:
             switch ServiceRow(rawValue: indexPath.row)! {
-            case .share:
-                let service = dataManager.remoteDataManager.shareService
-                let vc = AuthenticationViewController(authentication: service)
-                vc.authenticationObserver = { [unowned self] (service) in
-                    self.dataManager.remoteDataManager.shareService = service
-
-                    self.tableView.reloadRows(at: [indexPath], with: .none)
-                }
-
-                show(vc, sender: sender)
             case .nightscout:
                 let service = dataManager.remoteDataManager.nightscoutService
                 let vc = AuthenticationViewController(authentication: service)
@@ -687,10 +725,17 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
         if sender.isOn {
             setG4SwitchOff()
             setEnliteSwitchOff()
+            let shareRowExists = tableView.numberOfRows(inSection: Section.cgm.rawValue) > CGMRow.dexcomShare.rawValue
             dataManager.cgm = .g5(transmitterID: g5TransmitterID)
 
-            tableView.insertRows(at: [IndexPath(row: CGMRow.g5TransmitterID.rawValue, section:Section.cgm.rawValue)], with: .top)
+            var indexPaths = [IndexPath(row: CGMRow.g5TransmitterID.rawValue, section:Section.cgm.rawValue)]
+            if !shareRowExists {
+                indexPaths.insert(IndexPath(row: CGMRow.dexcomShare.rawValue, section:Section.cgm.rawValue), at: 0)
+            }
+
+            tableView.insertRows(at: indexPaths, with: .top)
         } else {
+            removeDexcomShareRow()
             removeG5TransmitterIDRow()
             dataManager.cgm = nil
         }
@@ -702,8 +747,15 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
         if sender.isOn {
             setG5SwitchOff()
             setEnliteSwitchOff()
+            removeG5TransmitterIDRow()
+            let shareRowExists = tableView.numberOfRows(inSection: Section.cgm.rawValue) > CGMRow.dexcomShare.rawValue
             dataManager.cgm = .g4
+
+            if !shareRowExists {
+                tableView.insertRows(at: [IndexPath(row: CGMRow.dexcomShare.rawValue, section:Section.cgm.rawValue)], with: .top)
+            }
         } else {
+            removeDexcomShareRow()
             dataManager.cgm = nil
         }
         tableView.endUpdates()
@@ -714,6 +766,8 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
         if sender.isOn {
             setG5SwitchOff()
             setG4SwitchOff()
+            removeDexcomShareRow()
+            removeG5TransmitterIDRow()
             dataManager.cgm = .enlite
         } else {
             dataManager.cgm = nil
@@ -723,18 +777,25 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
 
     // MARK: Views
 
+    private func removeDexcomShareRow() {
+        switch dataManager.cgm {
+        case .g4?, .g5?:
+            tableView.deleteRows(at: [IndexPath(row: CGMRow.dexcomShare.rawValue, section: Section.cgm.rawValue)], with: .top)
+        default:
+            break;
+        }
+    }
+
     private func removeG5TransmitterIDRow() {
         if case .g5(let transmitterID)? = dataManager.cgm {
             g5TransmitterID = transmitterID
-            tableView.deleteRows(at: [IndexPath(row: CGMRow.g5TransmitterID.rawValue, section:Section.cgm.rawValue)], with: .top)
+            tableView.deleteRows(at: [IndexPath(row: CGMRow.g5TransmitterID.rawValue, section: Section.cgm.rawValue)], with: .top)
         }
     }
 
     private func setG5SwitchOff() {
         let switchCell = tableView.cellForRow(at: IndexPath(row: CGMRow.g5.rawValue, section: Section.cgm.rawValue)) as! SwitchTableViewCell
         switchCell.switch?.setOn(false, animated: true)
-
-        removeG5TransmitterIDRow()
     }
 
     private func setG4SwitchOff() {
@@ -761,7 +822,7 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
                     }
                 case .glucoseTargetRange:
                     if let controller = controller as? GlucoseRangeScheduleTableViewController {
-                        dataManager.loopManager.settings.glucoseTargetRangeSchedule = GlucoseRangeSchedule(unit: controller.unit, dailyItems: controller.scheduleItems, workoutRange: controller.workoutRange, timeZone: controller.timeZone)
+                        dataManager.loopManager.settings.glucoseTargetRangeSchedule = GlucoseRangeSchedule(unit: controller.unit, dailyItems: controller.scheduleItems, timeZone: controller.timeZone, overrideRanges: controller.overrideRanges, override: dataManager.loopManager.settings.glucoseTargetRangeSchedule?.override)
                         AnalyticsManager.shared.didChangeGlucoseTargetRangeSchedule()
                     }
                 case let row:
@@ -783,6 +844,31 @@ final class SettingsTableViewController: UITableViewController, DailyValueSchedu
             default:
                 break
             }
+        }
+    }
+}
+
+
+extension SettingsTableViewController: InsulinModelSettingsViewControllerDelegate {
+    func insulinModelSettingsViewControllerDidChangeValue(_ controller: InsulinModelSettingsViewController) {
+        guard let indexPath = self.tableView.indexPathForSelectedRow else {
+            return
+        }
+
+        switch Section(rawValue: indexPath.section)! {
+        case .configuration:
+            switch ConfigurationRow(rawValue: indexPath.row)! {
+            case .insulinModel:
+                if let model = controller.insulinModel {
+                    dataManager.loopManager.insulinModelSettings = InsulinModelSettings(model: model)
+                }
+
+                tableView.reloadRows(at: [indexPath], with: .none)
+            default:
+                assertionFailure()
+            }
+        default:
+            assertionFailure()
         }
     }
 }
@@ -854,18 +940,12 @@ extension SettingsTableViewController: TextFieldTableViewControllerDelegate {
                 }
             case .configuration:
                 switch ConfigurationRow(rawValue: indexPath.row)! {
-                case .minimumBGGuard:
+                case .suspendThreshold:
                     if let controller = controller as? GlucoseThresholdTableViewController,
                         let value = controller.value, let minBGGuard = valueNumberFormatter.number(from: value)?.doubleValue {
-                        dataManager.loopManager.settings.minimumBGGuard = GlucoseThreshold(unit: controller.glucoseUnit, value: minBGGuard)
+                        dataManager.loopManager.settings.suspendThreshold = GlucoseThreshold(unit: controller.glucoseUnit, value: minBGGuard)
                     } else {
-                        dataManager.loopManager.settings.minimumBGGuard = nil
-                    }
-                case .insulinActionDuration:
-                    if let value = controller.value, let duration = valueNumberFormatter.number(from: value)?.doubleValue {
-                        dataManager.loopManager.insulinActionDuration = TimeInterval(hours: duration)
-                    } else {
-                        dataManager.loopManager.insulinActionDuration = nil
+                        dataManager.loopManager.settings.suspendThreshold = nil
                     }
                 case .maxBasal:
                     if let value = controller.value, let rate = valueNumberFormatter.number(from: value)?.doubleValue {

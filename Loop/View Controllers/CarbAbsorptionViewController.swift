@@ -14,7 +14,7 @@ import LoopUI
 
 
 private extension RefreshContext {
-    static let all: RefreshContext = [.glucose, .carbs, .targets, .status]
+    static let all: Set<RefreshContext> = [.glucose, .carbs, .targets, .status]
 }
 
 
@@ -38,7 +38,7 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
                     case .preferences?:
                         self.refreshContext.update(with: .targets)
                     case .carbs?:
-                        self.refreshContext.update(with: [.carbs, .glucose])
+                        self.refreshContext.formUnion([.carbs, .glucose])
                     case .glucose?:
                         self.refreshContext.update(with: .glucose)
                     default:
@@ -57,6 +57,8 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
 
         navigationItem.rightBarButtonItems?.append(editButtonItem)
 
+        tableView.rowHeight = UITableViewAutomaticDimension
+
         reloadData(animated: false)
     }
 
@@ -64,19 +66,19 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
         super.didReceiveMemoryWarning()
 
         if !visible {
-            refreshContext = .all
+            refreshContext = RefreshContext.all
         }
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
-        refreshContext.update(with: .status)
+        refreshContext.update(with: .size(size))
 
         super.viewWillTransition(to: size, with: coordinator)
     }
 
     // MARK: - State
 
-    private var refreshContext: RefreshContext = .all
+    private var refreshContext = RefreshContext.all
 
     private var chartStartDate: Date {
         get {
@@ -84,7 +86,7 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
         }
         set {
             if newValue != chartStartDate {
-                refreshContext = .all
+                refreshContext = RefreshContext.all
             }
 
             charts.startDate = newValue
@@ -99,12 +101,14 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
 
     // MARK: - Data loading
 
-    override func reloadData(animated: Bool, to size: CGSize? = nil) {
+    override func reloadData(animated: Bool) {
         guard active && !self.refreshContext.isEmpty else { return }
 
         // How far back should we show data? Use the screen size as a guide.
         let minimumSegmentWidth: CGFloat = 75
-        let availableWidth = (size ?? self.tableView.bounds.size).width - self.charts.fixedHorizontalMargin
+
+        let size = self.refreshContext.removeNewSize() ?? self.tableView.bounds.size
+        let availableWidth = size.width - self.charts.fixedHorizontalMargin
         let totalHours = floor(Double(availableWidth / minimumSegmentWidth))
 
         var components = DateComponents()
@@ -143,6 +147,7 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
                         switch result {
                         case .success(let status):
                             carbStatuses = status
+                            carbsOnBoard = status.clampedCarbsOnBoard
                         case .failure(let error):
                             self.deviceManager.logger.addError(error, fromSource: "CarbStore")
                             refreshContext.update(with: .carbs)
@@ -164,8 +169,6 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
                         reloadGroup.leave()
                     }
                 }
-
-                carbsOnBoard = state.carbsOnBoard
 
                 if refreshContext.remove(.targets) != nil {
                     if let schedule = manager.settings.glucoseTargetRangeSchedule {
@@ -216,10 +219,10 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
                     self.carbTotal = carbTotal
                 }
 
+                self.carbsOnBoard = carbsOnBoard
+
                 self.tableView.reloadSections(IndexSet(integer: Section.entries.rawValue), with: .fade)
             }
-
-            self.carbsOnBoard = carbsOnBoard
 
             if let cell = self.tableView.cellForRow(at: IndexPath(row: 0, section: Section.totals.rawValue)) as? HeaderValuesTableViewCell {
                 self.updateCell(cell)
@@ -381,12 +384,25 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
     private func updateCell(_ cell: HeaderValuesTableViewCell) {
         let unit = HKUnit.gram()
 
-        if let carbsOnBoard = carbsOnBoard {
+        if let carbsOnBoard = carbsOnBoard, carbsOnBoard.quantity.doubleValue(for: unit) > 0 {
             cell.COBDateLabel.text = String(
                 format: NSLocalizedString("at %@", comment: "Format fragment for a specific time"),
                 timeFormatter.string(from: carbsOnBoard.startDate)
             )
             cell.COBValueLabel.text = carbFormatter.string(from: NSNumber(value: carbsOnBoard.quantity.doubleValue(for: unit)))
+
+            // Warn the user if the carbsOnBoard value isn't recent
+            let textColor: UIColor
+            switch carbsOnBoard.startDate.timeIntervalSinceNow {
+            case let t where t < .minutes(-30):
+                textColor = .staleColor
+            case let t where t < .minutes(-15):
+                textColor = .agingColor
+            default:
+                textColor = .secondaryLabelColor
+            }
+
+            cell.COBDateLabel.textColor = textColor
         } else {
             cell.COBDateLabel.text = nil
             cell.COBValueLabel.text = carbFormatter.string(from: NSNumber(value: 0))
@@ -436,26 +452,12 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
 
     override func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         switch Section(rawValue: indexPath.section)! {
-        case .charts, .totals:
-            return self.tableView(tableView, heightForRowAt: indexPath)
+        case .charts:
+            return 170
+        case .totals:
+            return 66
         case .entries:
             return 66
-        }
-    }
-
-    override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        switch Section(rawValue: indexPath.section)! {
-        case .charts:
-            // 20: Status bar
-            // 44: Toolbar
-            let availableSize = max(tableView.bounds.width, tableView.bounds.height) - 20 - (tableView.tableHeaderView?.frame.height ?? 0) - 44
-
-            switch ChartRow(rawValue: indexPath.row)! {
-            case .carbEffect:
-                return max(100, 0.40 * availableSize)
-            }
-        case .totals, .entries:
-            return UITableViewAutomaticDimension
         }
     }
 
