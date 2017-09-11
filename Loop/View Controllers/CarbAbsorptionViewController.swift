@@ -24,8 +24,8 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
         super.viewDidLoad()
 
         charts.glucoseDisplayRange = (
-            min: HKQuantity(unit: HKUnit.milligramsPerDeciliter(), doubleValue: 100),
-            max: HKQuantity(unit: HKUnit.milligramsPerDeciliter(), doubleValue: 175)
+            min: HKQuantity(unit: HKUnit.milligramsPerDeciliter(), doubleValue: 50),
+            max: HKQuantity(unit: HKUnit.milligramsPerDeciliter(), doubleValue: 250)
         )
 
         let notificationCenter = NotificationCenter.default

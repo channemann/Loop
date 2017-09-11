@@ -85,7 +85,7 @@ enum DoseMath {
         if minGlucose.quantity <= minimumBGGuard.quantity {
             rate = 0
         } else if minGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) < minGlucoseTargets.minValue && eventualGlucose.quantity.doubleValue(for: glucoseTargetRange.unit) <= eventualGlucoseTargets.minValue {
-            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: (minGlucoseTargets.minValue + minGlucoseTargets.maxValue) / 2)
+            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: minGlucoseTargets.minValue)
             rate = calculateTempBasalRateForGlucose(minGlucose.quantity,
                 toTargetGlucose: targetGlucose,
                 insulinSensitivity: currentSensitivity,
@@ -99,7 +99,7 @@ enum DoseMath {
                 adjustedMaxBasalRate = currentScheduledBasalRate
             }
 
-            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: (eventualGlucoseTargets.minValue + eventualGlucoseTargets.maxValue) / 2)
+            let targetGlucose = HKQuantity(unit: glucoseTargetRange.unit, doubleValue: eventualGlucoseTargets.maxValue)
             rate = calculateTempBasalRateForGlucose(eventualGlucose.quantity,
                 toTargetGlucose: targetGlucose,
                 insulinSensitivity: currentSensitivity,
